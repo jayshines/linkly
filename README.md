@@ -1,36 +1,88 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Linkly
 
-## Getting Started
+A link-in-bio app. Sign in with GitHub, add and reorder links, pick a theme, share `/<username>`, and see which links get clicked.
 
-First, run the development server:
+Next.js 14 (App Router) · Auth.js (`next-auth` v4) · Prisma 5 + PostgreSQL · Tailwind · Framer Motion · recharts
+
+## Run it locally
+
+You need Node 20+ and a PostgreSQL database. Locally this uses a database named `linkly` inside the
+Postgres container from `../spendly/docker-compose.yml`.
 
 ```bash
+# 1. Start Postgres (from ../spendly) and create the database once
+docker compose up -d
+docker exec spendly-db psql -U spendly -d postgres -c "CREATE DATABASE linkly"
+
+# 2. Configure
+cp .env.example .env.local        # then fill in the values (see below)
+cp .env.local .env                # the Prisma CLI reads .env
+
+# 3. Install, migrate, seed, run  (http://localhost:3003)
+npm install
+npx prisma migrate dev
+npx prisma db seed                # creates /demo with 5 links and ~320 clicks
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:3003/demo for the seeded public page, or http://localhost:3003/login to sign in.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Signing in
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+**Dev login (no setup).** With `ENABLE_DEV_LOGIN="true"` the login page shows a "Dev login" button. It only
+exists when `NODE_ENV=development`, so it is never active in a production build.
 
-## Learn More
+**GitHub (the real thing).** Create an OAuth App at GitHub, Settings, Developer settings, OAuth Apps, New:
 
-To learn more about Next.js, take a look at the following resources:
+- Homepage URL: `http://localhost:3003`
+- Authorization callback URL: `http://localhost:3003/api/auth/callback/github`
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Then put the Client ID and a generated Client Secret into `.env.local` as `GITHUB_ID` and `GITHUB_SECRET`.
+Never paste the secret into chat or commit it. After the first GitHub sign-in you pick a username.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## How it works
 
-## Deploy on Vercel
+| Route | What it does |
+| --- | --- |
+| `/` | Landing page |
+| `/login`, `/onboarding` | Sign in, then claim a username |
+| `/dashboard` | Profile (photo, name, bio) and links: add, edit, toggle, delete, drag to reorder |
+| `/dashboard/appearance` | Mode, accent colour, button style, font, with a live phone preview |
+| `/dashboard/analytics` | Clicks over time and per link, for 7, 30 or 90 days |
+| `/[username]` | The public page |
+| `/r/[linkId]` | Click tracking: records the click, then redirects (302) to the real URL |
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Notes on behaviour:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- **Click tracking** works without JavaScript. Bots and requests with no User-Agent are redirected but not counted.
+  A failure to record a click never blocks the visitor. Only `http(s)` URLs are ever redirected to.
+- **Security:** every server action requires a session, validates input with `zod`, and filters every query by the
+  signed-in user's id. `src/app/dashboard/actions.test.ts` checks this against the real database as two users.
+- **Profile photos** are cropped and shrunk to 256 px in the browser and stored in Postgres (about 100 KB max).
+- **Sessions** are JWT-based because the dev login can't use database sessions. Users and GitHub accounts are
+  still stored in Postgres by the Prisma adapter.
+
+## Tests
+
+```bash
+npm test      # 53 tests: validators, analytics maths, reorder logic, the redirect handler, server actions
+```
+
+`actions.test.ts` needs the local database to be running. It creates and removes its own users.
+
+## Deploying later (not set up yet)
+
+Database on Railway, app on Vercel. Nothing here has been deployed.
+
+1. **Railway:** add a PostgreSQL service and copy its **public** connection string.
+2. **Migrate it:** `DATABASE_URL="<railway url>" npx prisma migrate deploy`.
+3. **Vercel:** import the repo, set the root directory to `linkly`, and set the environment variables:
+   `DATABASE_URL`, `NEXTAUTH_URL` (your Vercel URL), `NEXTAUTH_SECRET` (`openssl rand -base64 32`),
+   `GITHUB_ID`, `GITHUB_SECRET`. Do **not** set `ENABLE_DEV_LOGIN`.
+4. **GitHub:** add a second OAuth App (or update the callback) for `https://<your-app>.vercel.app/api/auth/callback/github`.
+
+## Known limits
+
+- No rate limiting on `/r/[linkId]`, so click counts can be inflated by someone who scripts a browser User-Agent.
+- Bot detection is a simple User-Agent check. It filters crawlers and link previews, not determined abuse.
+- Link order saves one request per drop. Very large lists (the cap is 50 links) are fine, thousands would not be.
